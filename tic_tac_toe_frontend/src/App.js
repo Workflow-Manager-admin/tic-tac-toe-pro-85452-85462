@@ -10,28 +10,63 @@ import {
 } from "react-router-dom";
 import "./App.css";
 
+/**
+ * ======== API INTEGRATION NOTES ========
+ * This file integrates frontend with backend FastAPI endpoints.
+ *   - All backend APIs are under /api on FastAPI server.
+ *   - Auth endpoints use: /api/auth/register, /api/auth/login (POST).
+ *   - JWT tokens are stored locally and included as Bearer in Authorization header.
+ *   - Game creation, moves, leaderboard, and history APIs all require JWT.
+ *   - Move, board, and user fields are mapped/normalized for backend responses.
+ *   - CORS is configured as permissive in backend (allow_origins ["*"]), so frontend requests succeed in dev.
+ *   - If deploying: be sure REACT_APP_BACKEND_URL points to correct server.
+ */
 // ======== API SETUP AND HELPERS ========
 
-// PUBLIC_INTERFACE
+/**
+ * API_BASE points to the backend FastAPI endpoint.
+ * If deploying, set REACT_APP_BACKEND_URL in your .env, otherwise defaults to localhost:8000.
+ */
 export const API_BASE =
   process.env.REACT_APP_BACKEND_URL || "http://localhost:8000";
 
-// PUBLIC_INTERFACE
-async function apiRequest(endpoint, method = "GET", body, authToken = null) {
-  // Simple API fetcher with optional JWT
+/**
+ * Unified API request function that manages content-type for JSON and auth headers.
+ * Special logic: For login, uses form-urlencoded; other endpoints use JSON.
+ */
+async function apiRequest(endpoint, method = "GET", body, authToken = null, optionsOverride = {}) {
+  const url = `${API_BASE}${endpoint}`;
+  let headers = { ...optionsOverride.headers };
+  let finalBody = null;
   let options = {
     method,
-    headers: {
-      "Content-Type": "application/json",
-    }
+    headers,
+    ...optionsOverride,
   };
+
+  // For login (OAuth2PasswordRequestForm) handle form data.
+  if (endpoint === "/api/auth/login" && method === "POST" && body && !optionsOverride.force_json) {
+    // FastAPI expects 'application/x-www-form-urlencoded' for login.
+    headers["Content-Type"] = "application/x-www-form-urlencoded";
+    finalBody = Object.entries(body)
+      .map(([k, v]) => encodeURIComponent(k) + "=" + encodeURIComponent(v))
+      .join("&");
+  } else if (body) {
+    headers["Content-Type"] = "application/json";
+    finalBody = JSON.stringify(body);
+  }
+
   if (authToken) {
-    options.headers["Authorization"] = `Bearer ${authToken}`;
+    headers["Authorization"] = `Bearer ${authToken}`;
   }
-  if (body) {
-    options.body = JSON.stringify(body);
+
+  if (finalBody) {
+    options.body = finalBody;
   }
-  const response = await fetch(`${API_BASE}${endpoint}`, options);
+
+  options.headers = headers;
+
+  const response = await fetch(url, options);
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw { status: response.status, data: data || { message: "Unknown error" } };
@@ -58,30 +93,39 @@ function useAuth() {
     else localStorage.removeItem("profile");
   }, [profile]);
 
-  // Fetch profile if JWT changes
+  // When token changes, decode payload to get username (no backend /users/me route exists).
   useEffect(() => {
-    const fetchProfile = async () => {
+    const loadProfileFromToken = async () => {
       if (token) {
-        setLoading(true);
         try {
-          const p = await apiRequest("/users/me", "GET", null, token);
-          setProfile(p);
+          // JWT payload is { sub: username }
+          const payload = JSON.parse(atob(token.split(".")[1]));
+          setProfile({ username: payload.sub });
         } catch {
           setProfile(null);
         }
-        setLoading(false);
       }
     };
-    fetchProfile();
+    loadProfileFromToken();
   }, [token]);
 
   // PUBLIC_INTERFACE
   const login = async (username, password) => {
     setLoading(true);
     try {
-      const res = await apiRequest("/auth/login", "POST", { username, password });
+      // FastAPI expects "/api/auth/login" with username+password as form fields.
+      const res = await apiRequest(
+        "/api/auth/login",
+        "POST",
+        {
+          username,
+          password,
+        },
+        null, // no bearer token
+        {} // options; default content-type handled in apiRequest
+      );
       setToken(res.access_token);
-      setProfile(null); // Triggers reload in effect
+      setProfile(null); // Triggers fetch in effect
       setLoading(false);
       return { success: true };
     } catch (err) {
@@ -94,9 +138,13 @@ function useAuth() {
   const register = async (username, password) => {
     setLoading(true);
     try {
-      await apiRequest("/auth/register", "POST", { username, password });
+      // Backend expects /api/auth/register POST with {username, password}
+      await apiRequest(
+        "/api/auth/register",
+        "POST",
+        { username, password }
+      );
       setLoading(false);
-      // auto-login on register
       await login(username, password);
       return { success: true };
     } catch (err) {
@@ -300,14 +348,29 @@ function LobbyPage({ auth, onOpenMatch }) {
   const [activeGames, setActiveGames] = useState([]);
   const [loading, setLoading] = useState(false);
 
-  // Poll for open/active games every 4 seconds
+  // There is no explicit "lobby" endpoint in backend, so list active multi games waiting for a second player.
   useEffect(() => {
     let running = true;
     async function pollLobby() {
       setLoading(true);
       try {
-        const data = await apiRequest("/games/lobby", "GET", null, auth.token);
-        if (running) setActiveGames(data.games || []);
+        // Filter games for type 'multi', active, and player_o is missing
+        const res = await apiRequest("/api/history", "GET", null, auth.token);
+        const myUsername = auth.profile?.username;
+        // Filter for pending games available to join (not mine)
+        const games = (res.games || [])
+          .filter(
+            g =>
+              g.type === "multi" &&
+              g.is_active &&
+              (!g.player_o || !g.player_o.length) &&
+              g.player_x !== myUsername
+          )
+          .map(g => ({
+            id: g.id,
+            host: g.player_x,
+          }));
+        if (running) setActiveGames(games);
       } catch {
         // ignore
       }
@@ -319,19 +382,22 @@ function LobbyPage({ auth, onOpenMatch }) {
       running = false;
       clearInterval(interval);
     };
-  }, [auth.token]);
+  }, [auth.token, auth.profile]);
 
   // Start new game handler
   const handleNewGame = useCallback(
     async isMulti => {
       setLoading(true);
       try {
-        const endpoint = isMulti ? "/games" : "/games/single";
-        const g = await apiRequest(endpoint, "POST", {}, auth.token);
-        // API should return {id: ...}
+        // Backend: POST /api/game/new {type: 'single'|'multi'}
+        const g = await apiRequest(
+          "/api/game/new",
+          "POST",
+          { type: isMulti ? "multi" : "single" },
+          auth.token
+        );
         onOpenMatch(g.id);
       } catch (e) {
-        // report error
         alert("Unable to start game.");
       }
       setLoading(false);
@@ -339,11 +405,17 @@ function LobbyPage({ auth, onOpenMatch }) {
     [auth, onOpenMatch]
   );
 
-  // Join game handler
+  // Join game handler for multi: mark as "player_o" using game.new
   const handleJoin = async gameId => {
     setLoading(true);
     try {
-      const g = await apiRequest(`/games/${gameId}/join`, "POST", {}, auth.token);
+      // To join, send /api/game/new with type: 'multi' (handled in backend by matching with open game)
+      const g = await apiRequest(
+        "/api/game/new",
+        "POST",
+        { type: "multi" },
+        auth.token
+      );
       onOpenMatch(g.id);
     } catch (e) {
       alert("Unable to join game.");
@@ -385,13 +457,13 @@ function GamePage({ auth, gameId, onLeave }) {
   const [loading, setLoading] = useState(true);
   const [moveLoading, setMoveLoading] = useState(false);
 
-  // Poll for game state
+  // Poll for game state (backend GET /api/game/{id})
   useEffect(() => {
     let running = true;
     async function pollGame() {
       setLoading(true);
       try {
-        const data = await apiRequest(`/games/${gameId}`, "GET", null, auth.token);
+        const data = await apiRequest(`/api/game/${gameId}`, "GET", null, auth.token);
         if (running) setGame(data);
       } catch (e) {
         // error
@@ -399,26 +471,27 @@ function GamePage({ auth, gameId, onLeave }) {
       setLoading(false);
     }
     pollGame();
-    const interval = setInterval(pollGame, 1800);
+    const interval = setInterval(pollGame, 2000);
     return () => {
       running = false;
       clearInterval(interval);
     };
   }, [gameId, auth.token]);
 
-  // Make move
+  // Make move (backend expects {x, y})
   async function makeMove(idx) {
     setMoveLoading(true);
     try {
+      // idx 0..8, map to (x, y)
+      const x = Math.floor(idx / 3), y = idx % 3;
       await apiRequest(
-        `/games/${gameId}/move`,
+        `/api/game/${gameId}/move`,
         "POST",
-        { cell: idx },
+        { x, y },
         auth.token
       );
       // will update via poll
     } catch (e) {
-      // error feedback
       alert("Invalid move.");
     }
     setMoveLoading(false);
@@ -428,36 +501,63 @@ function GamePage({ auth, gameId, onLeave }) {
     return <ContainerMain><div>Loading match...</div></ContainerMain>;
   }
 
-  // Identify my mark (X or O) and if my turn
-  const myMark = game.players && Object.entries(game.players).find(([_, name]) => name === auth.profile.username)?.[0];
-  const isGameOver = !!game.winner;
+  // Backend response fields: id, type, player_x, player_o, winner, is_active, moves[]
+  // Construct a [3x3] board array; winner is a username or null, not symbol
+  const moves = (game.moves || []);
+  const boardArr = Array(9).fill("");
+  moves.forEach(m => {
+    boardArr[m.x * 3 + m.y] = m.symbol;
+  });
+
+  // Determine which player am I
+  const myName = auth.profile?.username;
+  let myMark = null;
+  if (game.player_x === myName) myMark = "X";
+  if (game.player_o === myName) myMark = "O";
+  const currentTurn = moves.length === 0 ? "X" : (moves[moves.length - 1].symbol === "X" ? "O" : "X");
+
+  // Winner username (not symbol)
+  let winnerDisplay = null;
+  if (!game.is_active) {
+    if (game.winner) {
+      winnerDisplay = game.winner;
+    } else {
+      // If draw
+      const filled = boardArr.every(Boolean);
+      if (filled) winnerDisplay = "draw";
+    }
+  }
+
+  const isGameOver = !!winnerDisplay;
 
   return (
     <ContainerMain>
       <h2>Tic-Tac-Toe Match</h2>
       <div className="match-status-row">
-        <span>Players: 
-          <b> {game.players?.X || "?"} (X)</b> &nbsp;vs&nbsp; 
-          <b>{game.players?.O || "?"} (O)</b>
+        <span>
+          Players:
+          <b> {game.player_x || "?"} (X)</b>
+          &nbsp;vs&nbsp;
+          <b>{game.player_o || "?"} (O)</b>
         </span>
         <button className="btn btn-small" onClick={onLeave}>
           Leave Match
         </button>
       </div>
       <TicTacToeBoard
-        board={game.board || Array(9).fill("")}
+        board={boardArr}
         onMove={makeMove}
         myMark={myMark}
-        current={game.turn}
-        winner={game.winner}
-        disabled={isGameOver || (myMark !== game.turn) || moveLoading}
+        current={currentTurn}
+        winner={winnerDisplay}
+        disabled={isGameOver || (myMark !== currentTurn) || moveLoading}
       />
       <div className="match-meta">
-        {game.winner && (
+        {winnerDisplay && (
           <div className="match-final-status">
-            {game.winner === "draw"
+            {winnerDisplay === "draw"
               ? "It's a draw!"
-              : `Winner: ${game.winner} (${game.players?.[game.winner] || "?"})`}
+              : `Winner: ${winnerDisplay}`}
           </div>
         )}
       </div>
@@ -473,9 +573,10 @@ function LeaderboardPage({ auth }) {
 
   useEffect(() => {
     let mounted = true;
-    apiRequest("/leaderboard", "GET", null, auth.token)
+    apiRequest("/api/leaderboard", "GET", null, auth.token)
       .then(data => {
-        if (mounted) setLeaders(data.leaderboard || []);
+        // data is a list [{username, wins, losses, ties}]
+        if (mounted) setLeaders(data);
       })
       .finally(() => setLoading(false));
     return () => {
@@ -506,7 +607,7 @@ function LeaderboardPage({ auth }) {
                 <td>{p.username}</td>
                 <td>{p.wins}</td>
                 <td>{p.losses}</td>
-                <td>{p.draws}</td>
+                <td>{p.ties}</td>
               </tr>
             ))}
           </tbody>
@@ -524,13 +625,15 @@ function HistoryPage({ auth }) {
 
   useEffect(() => {
     let mounted = true;
-    apiRequest("/games/history", "GET", null, auth.token)
-      .then(data => {
-        if (mounted) setHistory(data.history || []);
+    apiRequest("/api/history", "GET", null, auth.token)
+      .then(res => {
+        if (mounted) setHistory(res.games || []);
       })
       .finally(() => setLoading(false));
     return () => { mounted = false; };
   }, [auth.token]);
+
+  const myName = auth.profile?.username;
 
   return (
     <ContainerMain>
@@ -551,19 +654,30 @@ function HistoryPage({ auth }) {
                 </tr>
               </thead>
               <tbody>
-                {history.map(item => (
-                  <tr key={item.id}>
-                    <td>{item.id}</td>
-                    <td>{auth.profile.username}</td>
-                    <td>{item.opponent}</td>
-                    <td>
-                      {item.result === "win" && "Win"}
-                      {item.result === "loss" && "Loss"}
-                      {item.result === "draw" && "Draw"}
-                    </td>
-                    <td>{item.date ? new Date(item.date).toLocaleString() : ""}</td>
-                  </tr>
-                ))}
+                {history.map(item => {
+                  // Identify opponent and result
+                  let opponent = null;
+                  if (item.player_x === myName) opponent = item.player_o;
+                  else if (item.player_o === myName) opponent = item.player_x;
+                  const isDraw = !item.winner && !item.is_active;
+                  let result = "";
+                  if (isDraw) result = "draw";
+                  else if (item.winner === myName) result = "win";
+                  else if (item.winner) result = "loss";
+                  return (
+                    <tr key={item.id}>
+                      <td>{item.id}</td>
+                      <td>{myName}</td>
+                      <td>{opponent || "-"}</td>
+                      <td>
+                        {result === "win" && "Win"}
+                        {result === "loss" && "Loss"}
+                        {result === "draw" && "Draw"}
+                      </td>
+                      <td>{item.completed_at ? new Date(item.completed_at).toLocaleString() : ""}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           )}
