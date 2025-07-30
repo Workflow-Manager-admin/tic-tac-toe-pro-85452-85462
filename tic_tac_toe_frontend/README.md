@@ -1,82 +1,109 @@
-# Lightweight React Template for KAVIA
+# Tic Tac Toe Frontend (React)
 
-This project provides a minimal React template with a clean, modern UI and minimal dependencies.
+## Project Purpose
 
-## Features
+This is the web frontend for Tic Tac Toe Pro, providing a streamlined user interface for registration, login, playing Tic Tac Toe (single or multiplayer), and tracking your performance via leaderboards and history. The app connects to a FastAPI backend and demonstrates modern, minimal design and real-time feedback.
 
-- **Lightweight**: No heavy UI frameworks - uses only vanilla CSS and React
-- **Modern UI**: Clean, responsive design with KAVIA brand styling
-- **Fast**: Minimal dependencies for quick loading times
-- **Simple**: Easy to understand and modify
+## Prerequisites
 
-## Getting Started
+- Node.js (v18+ recommended)
+- npm (v9+ recommended)
 
-In the project directory, you can run:
+## Setup Instructions
 
-### `npm start`
+1. **Navigate to the frontend directory**:
+   ```bash
+   cd tic_tac_toe_frontend
+   ```
 
-Runs the app in development mode.\
-Open [http://localhost:3000](http://localhost:3000) to view it in your browser.
+2. **Install dependencies**:
+   ```bash
+   npm install
+   ```
 
-### `npm test`
+3. **(Optional) Configure environment**:
 
-Launches the test runner in interactive watch mode.
+   To connect to a deployed backend or custom API URL, set an environment variable:
 
-### `npm run build`
+   - `REACT_APP_BACKEND_URL` (default: `http://localhost:8000`)
 
-Builds the app for production to the `build` folder.\
-It correctly bundles React in production mode and optimizes the build for the best performance.
+   For example, create a `.env` file:
+   ```
+   REACT_APP_BACKEND_URL=http://your-backend-server:8000
+   ```
 
-## Customization
+## Running and Development
 
-### Colors
+- Start development server:
+  ```bash
+  npm start
+  ```
+  The app runs at [http://localhost:3000](http://localhost:3000).
 
-The main brand colors are defined as CSS variables in `src/App.css`:
+- Run tests:
+  ```bash
+  npm test
+  ```
 
-```css
-:root {
-  --kavia-orange: #E87A41;
-  --kavia-dark: #1A1A1A;
-  --text-color: #ffffff;
-  --text-secondary: rgba(255, 255, 255, 0.7);
-  --border-color: rgba(255, 255, 255, 0.1);
-}
+- Build for production:
+  ```bash
+  npm run build
+  ```
+
+## Environment Variable Usage
+
+| Variable                 | Description                                | Default                  |
+|--------------------------|--------------------------------------------|--------------------------|
+| REACT_APP_BACKEND_URL    | URL of the backend FastAPI server          | http://localhost:8000    |
+
+- If not set, all requests default to local backend.
+
+## API Summary (Integration)
+
+The app communicates with backend endpoints as follows:
+
+| Endpoint                  | Method | Description                    | Example use              |
+|---------------------------|--------|--------------------------------|--------------------------|
+| `/api/auth/register`      | POST   | Register account               | { username, password }   |
+| `/api/auth/login`         | POST   | Login, returns JWT             | username/password form   |
+| `/api/game/new`           | POST   | Create/join game               | { type: "single"/"multi" } |
+| `/api/game/{id}/move`     | POST   | Play move                      | { x: int, y: int }       |
+| `/api/leaderboard`        | GET    | View leaderboard               |                          |
+| `/api/history`            | GET    | View game history (user)       |                          |
+
+Authentication (JWT) is securely stored in browser storage. Requests automatically attach the auth token when calling protected endpoints.
+
+## Architecture
+
+```mermaid
+flowchart TD
+    BROWSER["User (React App)"]
+    API["FastAPI REST API"]
+    DB["PostgreSQL DB"]
+    BROWSER --HTTP/JSON fetch--> API
+    API --ORM--> DB
 ```
 
-### Components
+- The app uses React Router for navigation (`/login`, `/register`, `/lobby`, `/leaderboard`, `/history`).
+- State management is internally handled via React hooks.
+- Backend API endpoint is configurable via environment.
 
-This template uses pure HTML/CSS components instead of a UI framework. You can find component styles in `src/App.css`. 
+## Example User/Game Flow
 
-Common components include:
-- Buttons (`.btn`, `.btn-large`)
-- Container (`.container`)
-- Navigation (`.navbar`)
-- Typography (`.title`, `.subtitle`, `.description`)
+1. **First Visit**: User is prompted to log in or register.
+2. **Register/Login**: Submits credentials to backend; receives and stores JWT.
+3. **Lobby**: User can start a new game (single or multi) or join an open multiplayer match.
+4. **Gameplay**: Interface displays current board, whose turn, and interacts with `/api/game/{id}/move`.
+5. **Results**: On game end, user can review stats/history or access the leaderboard.
 
-## Learn More
+## Feature Highlights
 
-To learn React, check out the [React documentation](https://reactjs.org/).
+- Modern, minimal UI (custom CSS, responsive)
+- JWT authentication (secure)
+- Persistent score/leaderboard/history
+- Single and multiplayer modes
+- Fully decoupled from backend for flexible deployment
 
-### Code Splitting
+---
 
-This section has moved here: [https://facebook.github.io/create-react-app/docs/code-splitting](https://facebook.github.io/create-react-app/docs/code-splitting)
-
-### Analyzing the Bundle Size
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size](https://facebook.github.io/create-react-app/docs/analyzing-the-bundle-size)
-
-### Making a Progressive Web App
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app](https://facebook.github.io/create-react-app/docs/making-a-progressive-web-app)
-
-### Advanced Configuration
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/advanced-configuration](https://facebook.github.io/create-react-app/docs/advanced-configuration)
-
-### Deployment
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/deployment](https://facebook.github.io/create-react-app/docs/deployment)
-
-### `npm run build` fails to minify
-
-This section has moved here: [https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify](https://facebook.github.io/create-react-app/docs/troubleshooting#npm-run-build-fails-to-minify)
+Task completed: README files for both backend and frontend created, including API usage, architecture, setup, and all required documentation.
